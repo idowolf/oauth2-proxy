@@ -1249,8 +1249,8 @@ func (p *OAuthProxy) getAuthenticatedSession(rw http.ResponseWriter, req *http.R
 		return nil, ErrNeedsLogin
 	}
 
-	// CSRF validation: only for cookie-authenticated, unsafe-method requests
-	if scope.AuthMethod == "cookie" && p.CSRFTokenOptions.CSRFToken && !isSafeMethod(req) && !p.isAllowedCSRFRoute(req) {
+	// CSRF validation: for cookie-authenticated requests on unsafe methods (or all methods if IncludeSafeMethods is set)
+	if scope.AuthMethod == "cookie" && p.CSRFTokenOptions.CSRFToken && (!isSafeMethod(req) || p.CSRFTokenOptions.IncludeSafeMethods) && !p.isAllowedCSRFRoute(req) {
 		if !p.isValidCSRFToken(req, session) {
 			return nil, ErrAccessDenied
 		}

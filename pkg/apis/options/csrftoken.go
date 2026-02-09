@@ -16,7 +16,8 @@ type CSRFToken struct {
 	CookieSecure   bool          `flag:"csrftoken-cookie-secure" cfg:"csrftoken_cookie_secure"`
 	CookieHTTPOnly bool          `flag:"csrftoken-cookie-httponly" cfg:"csrftoken_cookie_httponly"`
 	CookieSameSite string        `flag:"csrftoken-cookie-samesite" cfg:"csrftoken_cookie_samesite"`
-	RequestHeader  string        `flag:"csrftoken-header" cfg:"csrftoken_header"`
+	RequestHeader      string        `flag:"csrftoken-header" cfg:"csrftoken_header"`
+	IncludeSafeMethods bool          `flag:"csrftoken-include-safe-methods" cfg:"csrftoken_include_safe_methods"`
 }
 
 func csrfTokenFlagSet() *pflag.FlagSet {
@@ -31,6 +32,7 @@ func csrfTokenFlagSet() *pflag.FlagSet {
 	flagSet.Bool("csrftoken-cookie-httponly", false, "set HttpOnly cookie flag for CSRF token cookie (note: should be false so client JS can read it)")
 	flagSet.String("csrftoken-cookie-samesite", "strict", "set SameSite cookie attribute for CSRF token cookie (lax, strict, none, or empty)")
 	flagSet.String("csrftoken-header", "X-CSRF-Token", "the name of the header for holding the CSRF token sent from the client")
+	flagSet.Bool("csrftoken-include-safe-methods", false, "also validate CSRF token on safe methods (GET, HEAD, OPTIONS, TRACE). Use --skip-csrftoken-route to whitelist specific routes.")
 
 	return flagSet
 }
@@ -46,6 +48,7 @@ func CSRFTokenDefaults() CSRFToken {
 		CookieSecure:   true,
 		CookieHTTPOnly: false,
 		CookieSameSite: "strict",
-		RequestHeader:  "X-CSRF-Token",
+		RequestHeader:      "X-CSRF-Token",
+		IncludeSafeMethods: false,
 	}
 }
