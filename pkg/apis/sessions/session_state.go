@@ -3,6 +3,8 @@ package sessions
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"time"
@@ -22,6 +24,8 @@ type SessionState struct {
 	RefreshToken string `msgpack:"rt,omitempty"`
 
 	Nonce []byte `msgpack:"n,omitempty"`
+
+	CSRFToken string `msgpack:"ct,omitempty"`
 
 	Email             string   `msgpack:"e,omitempty"`
 	User              string   `msgpack:"u,omitempty"`
@@ -124,6 +128,9 @@ func (s *SessionState) String() string {
 	if s.RefreshToken != "" {
 		o += " refresh_token:true"
 	}
+	if s.CSRFToken != "" {
+		o += " csrf_token:true"
+	}
 	if len(s.Groups) > 0 {
 		o += fmt.Sprintf(" groups:%v", s.Groups)
 	}
@@ -145,6 +152,8 @@ func (s *SessionState) GetClaim(claim string) []string {
 		return []string{s.ExpiresOn.String()}
 	case "refresh_token":
 		return []string{s.RefreshToken}
+	case "csrf_token":
+		return []string{s.CSRFToken}
 	case "email":
 		return []string{s.Email}
 	case "user":
@@ -256,4 +265,13 @@ func lz4Decompress(compressed []byte) ([]byte, error) {
 	}
 
 	return payload, nil
+}
+
+// GenerateCSRFToken generates a cryptographically random CSRF token
+func GenerateCSRFToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("error generating CSRF token: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
