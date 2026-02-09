@@ -41,6 +41,10 @@ type RequestScope struct {
 
 	// Upstream tracks which upstream was used for this request
 	Upstream string
+
+	// AuthMethod tracks which middleware obtained the session.
+	// Values: "cookie" (stored session), "header" (JWT or basic auth), or "" (unauthenticated).
+	AuthMethod string
 }
 
 // GetRequestScope returns the current request scope from the given request

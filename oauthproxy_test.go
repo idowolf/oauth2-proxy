@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -3530,4 +3531,326 @@ func TestGetOAuthRedirectURI(t *testing.T) {
 			assert.Equalf(t, tt.want, proxy.getOAuthRedirectURI(tt.req), "getOAuthRedirectURI(%v)", tt.req)
 		})
 	}
+}
+
+// CSRF Token Tests
+
+func csrfTokenEnabledModifier(opts *options.Options) {
+	opts.CSRFToken.CSRFToken = true
+}
+
+func NewCSRFTokenEndpointTest(modifiers ...OptionsModifier) (*ProcessCookieTest, error) {
+	pcTest, err := NewProcessCookieTestWithOptionsModifiers(modifiers...)
+	if err != nil {
+		return nil, err
+	}
+	pcTest.req, _ = http.NewRequest("GET",
+		pcTest.opts.ProxyPrefix+"/csrftoken", nil)
+	return pcTest, nil
+}
+
+func TestCSRFTokenEndpointAccepted(t *testing.T) {
+	test, err := NewCSRFTokenEndpointTest(csrfTokenEnabledModifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created := time.Now()
+	err = test.SaveSession(&sessions.SessionState{
+		Email:     "michael.bland@gsa.gov",
+		CSRFToken: "test-csrf-token-value",
+		CreatedAt: &created,
+	})
+	assert.NoError(t, err)
+
+	test.proxy.ServeHTTP(test.rw, test.req)
+	assert.Equal(t, http.StatusOK, test.rw.Code)
+	assert.Equal(t, "application/json", test.rw.Header().Get("Content-Type"))
+
+	var resp struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	bodyBytes, _ := io.ReadAll(test.rw.Body)
+	err = json.Unmarshal(bodyBytes, &resp)
+	assert.NoError(t, err)
+	assert.Equal(t, "test-csrf-token-value", resp.CSRFToken)
+}
+
+func TestCSRFTokenEndpointUnauthorized(t *testing.T) {
+	test, err := NewCSRFTokenEndpointTest(csrfTokenEnabledModifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No session saved
+	test.proxy.ServeHTTP(test.rw, test.req)
+	assert.Equal(t, http.StatusUnauthorized, test.rw.Code)
+}
+
+func TestCSRFTokenEndpointNotFoundWhenDisabled(t *testing.T) {
+	// Default: CSRF disabled
+	test, err := NewCSRFTokenEndpointTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created := time.Now()
+	err = test.SaveSession(&sessions.SessionState{
+		Email:     "michael.bland@gsa.gov",
+		CreatedAt: &created,
+	})
+	assert.NoError(t, err)
+
+	test.proxy.ServeHTTP(test.rw, test.req)
+	assert.Equal(t, http.StatusNotFound, test.rw.Code)
+}
+
+func TestCSRFValidationBlocksUnsafeMethodWithoutToken(t *testing.T) {
+	test, err := NewProcessCookieTestWithOptionsModifiers(csrfTokenEnabledModifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created := time.Now()
+	err = test.SaveSession(&sessions.SessionState{
+		Email:     "michael.bland@gsa.gov",
+		CSRFToken: "session-csrf-token",
+		CreatedAt: &created,
+	})
+	assert.NoError(t, err)
+
+	// POST request without CSRF header
+	test.req, _ = http.NewRequest("POST", "/protected", strings.NewReader(""))
+	// Re-add session cookies
+	for _, cookie := range test.rw.Result().Cookies() {
+		test.req.AddCookie(cookie)
+	}
+	test.rw = httptest.NewRecorder()
+
+	test.proxy.ServeHTTP(test.rw, test.req)
+	assert.Equal(t, http.StatusForbidden, test.rw.Code)
+}
+
+func TestCSRFValidationBlocksInvalidToken(t *testing.T) {
+	test, err := NewProcessCookieTestWithOptionsModifiers(csrfTokenEnabledModifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created := time.Now()
+	err = test.SaveSession(&sessions.SessionState{
+		Email:     "michael.bland@gsa.gov",
+		CSRFToken: "session-csrf-token",
+		CreatedAt: &created,
+	})
+	assert.NoError(t, err)
+
+	// POST request with wrong CSRF header
+	test.req, _ = http.NewRequest("POST", "/protected", strings.NewReader(""))
+	test.req.Header.Set("X-CSRF-Token", "wrong-token")
+	for _, cookie := range test.rw.Result().Cookies() {
+		test.req.AddCookie(cookie)
+	}
+	test.rw = httptest.NewRecorder()
+
+	test.proxy.ServeHTTP(test.rw, test.req)
+	assert.Equal(t, http.StatusForbidden, test.rw.Code)
+}
+
+func TestCSRFValidationAllowsValidToken(t *testing.T) {
+	test, err := NewProcessCookieTestWithOptionsModifiers(csrfTokenEnabledModifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created := time.Now()
+	err = test.SaveSession(&sessions.SessionState{
+		Email:     "michael.bland@gsa.gov",
+		CSRFToken: "session-csrf-token",
+		CreatedAt: &created,
+	})
+	assert.NoError(t, err)
+
+	// POST request with correct CSRF header
+	test.req, _ = http.NewRequest("POST", "/protected", strings.NewReader(""))
+	test.req.Header.Set("X-CSRF-Token", "session-csrf-token")
+	for _, cookie := range test.rw.Result().Cookies() {
+		test.req.AddCookie(cookie)
+	}
+	test.rw = httptest.NewRecorder()
+
+	test.proxy.ServeHTTP(test.rw, test.req)
+	// Should pass CSRF check - will get 502 since no upstream is configured
+	assert.NotEqual(t, http.StatusForbidden, test.rw.Code)
+}
+
+func TestCSRFValidationSkipsSafeMethods(t *testing.T) {
+	safeMethods := []string{"GET", "HEAD", "OPTIONS", "TRACE"}
+
+	for _, method := range safeMethods {
+		t.Run(method, func(t *testing.T) {
+			test, err := NewProcessCookieTestWithOptionsModifiers(csrfTokenEnabledModifier)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			created := time.Now()
+			err = test.SaveSession(&sessions.SessionState{
+				Email:     "michael.bland@gsa.gov",
+				CSRFToken: "session-csrf-token",
+				CreatedAt: &created,
+			})
+			assert.NoError(t, err)
+
+			// Safe method without CSRF header - should pass
+			test.req, _ = http.NewRequest(method, "/protected", nil)
+			for _, cookie := range test.rw.Result().Cookies() {
+				test.req.AddCookie(cookie)
+			}
+			test.rw = httptest.NewRecorder()
+
+			test.proxy.ServeHTTP(test.rw, test.req)
+			// Should not be blocked by CSRF check
+			assert.NotEqual(t, http.StatusForbidden, test.rw.Code)
+		})
+	}
+}
+
+func TestCSRFValidationSkipsWhenDisabled(t *testing.T) {
+	// Default: CSRF disabled
+	test, err := NewProcessCookieTestWithDefaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created := time.Now()
+	err = test.SaveSession(&sessions.SessionState{
+		Email:     "michael.bland@gsa.gov",
+		CreatedAt: &created,
+	})
+	assert.NoError(t, err)
+
+	// POST without CSRF header should pass when CSRF is disabled
+	test.req, _ = http.NewRequest("POST", "/protected", strings.NewReader(""))
+	for _, cookie := range test.rw.Result().Cookies() {
+		test.req.AddCookie(cookie)
+	}
+	test.rw = httptest.NewRecorder()
+
+	test.proxy.ServeHTTP(test.rw, test.req)
+	assert.NotEqual(t, http.StatusForbidden, test.rw.Code)
+}
+
+func TestCSRFSkipRoute(t *testing.T) {
+	test, err := NewProcessCookieTestWithOptionsModifiers(func(opts *options.Options) {
+		opts.CSRFToken.CSRFToken = true
+		opts.SkipCSRFRoutes = []string{"POST=/api/webhook"}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created := time.Now()
+	err = test.SaveSession(&sessions.SessionState{
+		Email:     "michael.bland@gsa.gov",
+		CSRFToken: "session-csrf-token",
+		CreatedAt: &created,
+	})
+	assert.NoError(t, err)
+
+	// POST to skip route without CSRF header should pass
+	test.req, _ = http.NewRequest("POST", "/api/webhook", strings.NewReader(""))
+	for _, cookie := range test.rw.Result().Cookies() {
+		test.req.AddCookie(cookie)
+	}
+	test.rw = httptest.NewRecorder()
+
+	test.proxy.ServeHTTP(test.rw, test.req)
+	assert.NotEqual(t, http.StatusForbidden, test.rw.Code)
+}
+
+func TestCSRFIncludeSafeMethodsBlocksGET(t *testing.T) {
+	test, err := NewProcessCookieTestWithOptionsModifiers(func(opts *options.Options) {
+		opts.CSRFToken.CSRFToken = true
+		opts.CSRFToken.IncludeSafeMethods = true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created := time.Now()
+	err = test.SaveSession(&sessions.SessionState{
+		Email:     "michael.bland@gsa.gov",
+		CSRFToken: "session-csrf-token",
+		CreatedAt: &created,
+	})
+	assert.NoError(t, err)
+
+	// GET without CSRF header should be blocked when IncludeSafeMethods is true
+	test.req, _ = http.NewRequest("GET", "/protected", nil)
+	for _, cookie := range test.rw.Result().Cookies() {
+		test.req.AddCookie(cookie)
+	}
+	test.rw = httptest.NewRecorder()
+
+	test.proxy.ServeHTTP(test.rw, test.req)
+	assert.Equal(t, http.StatusForbidden, test.rw.Code)
+}
+
+func TestCSRFIncludeSafeMethodsAllowsWhitelistedRoute(t *testing.T) {
+	test, err := NewProcessCookieTestWithOptionsModifiers(func(opts *options.Options) {
+		opts.CSRFToken.CSRFToken = true
+		opts.CSRFToken.IncludeSafeMethods = true
+		opts.SkipCSRFRoutes = []string{"GET=/api/v1/callback"}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created := time.Now()
+	err = test.SaveSession(&sessions.SessionState{
+		Email:     "michael.bland@gsa.gov",
+		CSRFToken: "session-csrf-token",
+		CreatedAt: &created,
+	})
+	assert.NoError(t, err)
+
+	// GET to whitelisted route without CSRF header should pass
+	test.req, _ = http.NewRequest("GET", "/api/v1/callback", nil)
+	for _, cookie := range test.rw.Result().Cookies() {
+		test.req.AddCookie(cookie)
+	}
+	test.rw = httptest.NewRecorder()
+
+	test.proxy.ServeHTTP(test.rw, test.req)
+	assert.NotEqual(t, http.StatusForbidden, test.rw.Code)
+}
+
+func TestCSRFIncludeSafeMethodsAllowsValidToken(t *testing.T) {
+	test, err := NewProcessCookieTestWithOptionsModifiers(func(opts *options.Options) {
+		opts.CSRFToken.CSRFToken = true
+		opts.CSRFToken.IncludeSafeMethods = true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created := time.Now()
+	err = test.SaveSession(&sessions.SessionState{
+		Email:     "michael.bland@gsa.gov",
+		CSRFToken: "session-csrf-token",
+		CreatedAt: &created,
+	})
+	assert.NoError(t, err)
+
+	// GET with valid CSRF header should pass
+	test.req, _ = http.NewRequest("GET", "/protected", nil)
+	test.req.Header.Set("X-CSRF-Token", "session-csrf-token")
+	for _, cookie := range test.rw.Result().Cookies() {
+		test.req.AddCookie(cookie)
+	}
+	test.rw = httptest.NewRecorder()
+
+	test.proxy.ServeHTTP(test.rw, test.req)
+	assert.NotEqual(t, http.StatusForbidden, test.rw.Code)
 }

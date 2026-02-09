@@ -100,6 +100,9 @@ func (s *storedSessionLoader) loadSession(next http.Handler) http.Handler {
 
 		// Add the session to the scope if it was found
 		scope.Session = session
+		if scope.Session != nil {
+			scope.AuthMethod = "cookie"
+		}
 		next.ServeHTTP(rw, req)
 	})
 }

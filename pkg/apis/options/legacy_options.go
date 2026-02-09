@@ -87,6 +87,15 @@ func (l *LegacyOptions) ToOptions() (*Options, error) {
 
 	l.Options.InjectRequestHeaders, l.Options.InjectResponseHeaders = l.LegacyHeaders.convert()
 
+	// Strip the CSRF token header from incoming requests if skip-auth-strip-headers is enabled
+	if l.LegacyHeaders.SkipAuthStripHeaders && l.Options.CSRFToken.CSRFToken && l.Options.CSRFToken.RequestHeader != "" {
+		l.Options.InjectRequestHeaders = append(l.Options.InjectRequestHeaders, Header{
+			Name:                 l.Options.CSRFToken.RequestHeader,
+			PreserveRequestValue: ptr.To(false),
+			Values:               []HeaderValue{},
+		})
+	}
+
 	l.Options.Server, l.Options.MetricsServer = l.LegacyServer.convert()
 
 	l.Options.LegacyPreferEmailToUser = l.LegacyHeaders.PreferEmailToUser
@@ -206,6 +215,8 @@ type LegacyHeaders struct {
 	PreferEmailToUser    bool   `flag:"prefer-email-to-user" cfg:"prefer_email_to_user"`
 	BasicAuthPassword    string `flag:"basic-auth-password" cfg:"basic_auth_password"`
 	SkipAuthStripHeaders bool   `flag:"skip-auth-strip-headers" cfg:"skip_auth_strip_headers"`
+
+	CSRFTokenResponseHeader string `flag:"csrftoken-response-header" cfg:"csrftoken_response_header"`
 }
 
 func legacyHeadersFlagSet() *pflag.FlagSet {
@@ -223,6 +234,8 @@ func legacyHeadersFlagSet() *pflag.FlagSet {
 	flagSet.Bool("prefer-email-to-user", false, "Prefer to use the Email address as the Username when passing information to upstream. Will only use Username if Email is unavailable, eg. htaccess authentication. Used in conjunction with -pass-basic-auth and -pass-user-headers")
 	flagSet.String("basic-auth-password", "", "the password to set when passing the HTTP Basic Auth header")
 	flagSet.Bool("skip-auth-strip-headers", true, "strips X-Forwarded-* style authentication headers & Authorization header if they would be set by oauth2-proxy")
+
+	flagSet.String("csrftoken-response-header", "", "the name of the CSRF token header to return to client (e.g. X-CSRF-Token). If set to empty string (default), no CSRF token header will be set.")
 
 	return flagSet
 }
@@ -277,6 +290,10 @@ func (l *LegacyHeaders) getResponseHeaders() []Header {
 
 	if l.SetAuthorization {
 		responseHeaders = append(responseHeaders, getAuthorizationHeader())
+	}
+
+	if l.CSRFTokenResponseHeader != "" {
+		responseHeaders = append(responseHeaders, getCSRFTokenResponseHeader(l.CSRFTokenResponseHeader))
 	}
 
 	return responseHeaders
@@ -370,6 +387,20 @@ func getPassAccessTokenHeader() Header {
 			{
 				ClaimSource: &ClaimSource{
 					Claim: "access_token",
+				},
+			},
+		},
+	}
+}
+
+func getCSRFTokenResponseHeader(name string) Header {
+	return Header{
+		Name:                 name,
+		PreserveRequestValue: ptr.To(true),
+		Values: []HeaderValue{
+			{
+				ClaimSource: &ClaimSource{
+					Claim: "csrf_token",
 				},
 			},
 		},
